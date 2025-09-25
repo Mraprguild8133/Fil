@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 import os
 import logging
@@ -21,10 +22,11 @@ def main():
         logger.error("💡 Please set BOT_TOKEN in your Render environment variables.")
         return
     
+    logger.info(f"✅ BOT_TOKEN found: {bot_token[:10]}...")
+    
     try:
         bot = TelegramFileBot()
         logger.info("🤖 Bot initialized successfully!")
-        logger.info("📡 Starting polling...")
         bot.run()
     except Exception as e:
         logger.error(f"❌ Error starting bot: {e}")
