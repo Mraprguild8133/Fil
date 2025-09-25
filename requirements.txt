@@ -1,0 +1,5 @@
+python-telegram-bot==20.7
+python-dotenv==1.0.0
+sqlite3
+python-magic==0.4.27
+Pillow==10.0.0
