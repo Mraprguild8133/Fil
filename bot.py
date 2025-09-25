@@ -18,11 +18,12 @@ logger = logging.getLogger(__name__)
 
 class TelegramFileBot:
     def __init__(self):
+        # Validate configuration first
+        if not Config.BOT_TOKEN:
+            raise ValueError("BOT_TOKEN environment variable is not set!")
+        
         self.db = Database()
         self.file_manager = FileManager()
-        
-        # Validate configuration
-        Config.validate_config()
         
         # Create application
         self.application = Application.builder().token(Config.BOT_TOKEN).build()
@@ -297,7 +298,7 @@ Use /myfiles to see all your stored files and manage them.
                 text += f"🆔 {file_id}\n"
                 text += f"📄 {file_name}\n"
                 text += f"📊 {self.file_manager.format_file_size(file_size)}\n"
-                text += f"📅 {upload_date.split()[0]}\n"  # Show only date
+                text += f"📅 {upload_date.split()[0] if upload_date else 'Unknown'}\n"
                 if description:
                     text += f"📝 {description}\n"
                 text += "\n"
@@ -386,6 +387,7 @@ Use /myfiles to see all your stored files and manage them.
             logger.info("✅ Database connection successful!")
             
             # Start the bot
+            logger.info("📡 Starting polling...")
             self.application.run_polling(
                 drop_pending_updates=True,
                 allowed_updates=Update.ALL_TYPES,
