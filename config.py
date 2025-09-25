@@ -5,7 +5,7 @@ load_dotenv()
 
 class Config:
     # Bot token from BotFather
-    BOT_TOKEN = os.getenv('7776143869:AAGhypa-7pDOg8wTGAcfxJ8BftJ7G4VvQIA')
+    BOT_TOKEN = os.getenv('8431294116:AAHXFoaxtXwU96YrCngeY_x_clkLQgYsw0A')
     
     # Database configuration
     DATABASE_NAME = 'file_bot.db'
