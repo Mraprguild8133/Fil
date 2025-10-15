@@ -4,3 +4,6 @@ python-magic
 Pillow
 telethon
 requests
+pyrogram 
+removebg 
+python-multipart
