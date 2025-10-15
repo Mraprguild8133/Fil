@@ -1,9 +1,4 @@
-python-telegram-bot
-python-dotenv
-python-magic
-Pillow
-telethon
-requests
-pyrogram 
-removebg 
-python-multipart
+pyrogram==2.0.106
+tgcrypto==1.2.5
+requests==2.31.0
+python-dotenv==1.0.0
