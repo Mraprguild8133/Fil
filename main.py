@@ -1,290 +1,253 @@
-import os
-import requests
-import logging
-from telethon import TelegramClient, events
-from PIL import Image
-from io import BytesIO
-from collections import defaultdict
-import time
 import asyncio
+import os
+import logging
+from typing import Optional
+from io import BytesIO
 
-# Import configuration
-from config import config
+from pyrogram import Client, filters
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from pyrogram.errors import FloodWait
+import removebg
+from PIL import Image
+import requests
 
-# Set up logging
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# --- Rate Limiting ---
-user_requests = defaultdict(list)
+# Environment variables
+API_ID = int(os.getenv("API_ID"))
+API_HASH = os.getenv("API_HASH")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+REMOVE_BG_API_KEY = os.getenv("API_KEY")
 
-def is_rate_limited(user_id):
-    """Check if user is rate limited (10 requests per minute)"""
-    now = time.time()
-    # Clean old requests (older than 60 seconds)
-    user_requests[user_id] = [req_time for req_time in user_requests[user_id] if now - req_time < 60]
-    
-    if len(user_requests[user_id]) >= config.RATE_LIMIT:
-        return True
-    
-    user_requests[user_id].append(now)
-    return False
+# Initialize clients
+app = Client("bg_remover_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+rmbg = removebg.RemoveBg(REMOVE_BG_API_KEY, "error.log")
 
-# --- Bot Setup ---
-try:
-    bot = TelegramClient(
-        'background_removal_bot',
-        config.API_ID,
-        config.API_HASH
-    ).start(bot_token=config.BOT_TOKEN)
-    logger.info("Telegram client initialized successfully")
-except Exception as e:
-    logger.error(f"Failed to initialize Telegram client: {e}")
-    raise
+# Background options
+BACKGROUND_OPTIONS = {
+    "white": "⚪ White",
+    "black": "⚫ Black", 
+    "transparent": "🔲 Transparent",
+    "gray": "🔘 Gray",
+    "red": "🔴 Red",
+    "blue": "🔵 Blue",
+    "green": "🟢 Green"
+}
 
-# --- Bot Functionality ---
+# Store user sessions
+user_sessions = {}
 
-@bot.on(events.NewMessage(pattern='/start'))
-async def start(event):
-    """Handler for the /start command."""
+@app.on_message(filters.command("start"))
+async def start_command(client: Client, message: Message):
+    """Start command handler"""
     welcome_text = """
-🤖 **Background Removal Bot**
+🤖 **Background Remover Bot**
 
-Send me a photo and I'll remove the background for you!
+Send me an image and I'll remove its background instantly!
 
 **Features:**
-• Remove background from images
-• Reply with a color name (e.g., 'blue', '#FF0000') to add colored background
-• Reply with another photo to use it as background
+• Ultra-fast processing
+• Multiple background options
+• High-quality results
+• Support for various image formats
 
-**Usage:**
-1. Send a photo → Get transparent background
-2. Reply to result with color/image → Custom background
+Simply send an image to get started!
     """
-    await event.respond(welcome_text)
-    raise events.StopPropagation
+    await message.reply_text(welcome_text)
 
-@bot.on(events.NewMessage(pattern='/help'))
-async def help_command(event):
-    """Handler for the /help command."""
+@app.on_message(filters.photo | filters.document)
+async def handle_image(client: Client, message: Message):
+    """Handle incoming images"""
+    try:
+        # Send processing message
+        processing_msg = await message.reply_text("🔄 **Processing your image...**")
+        
+        # Download the image
+        image_path = await message.download()
+        
+        # Store user session
+        user_sessions[message.from_user.id] = {
+            "image_path": image_path,
+            "processing_msg": processing_msg
+        }
+        
+        # Show background options
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⚪ White", callback_data="bg_white"),
+             InlineKeyboardButton("⚫ Black", callback_data="bg_black")],
+            [InlineKeyboardButton("🔲 Transparent", callback_data="bg_transparent"),
+             InlineKeyboardButton("🔘 Gray", callback_data="bg_gray")],
+            [InlineKeyboardButton("🔴 Red", callback_data="bg_red"),
+             InlineKeyboardButton("🔵 Blue", callback_data="bg_blue")],
+            [InlineKeyboardButton("🟢 Green", callback_data="bg_green")]
+        ])
+        
+        await processing_msg.edit_text(
+            "🎨 **Choose background color:**",
+            reply_markup=keyboard
+        )
+        
+    except Exception as e:
+        logger.error(f"Error handling image: {e}")
+        await message.reply_text("❌ Error processing image. Please try again.")
+
+@app.on_callback_query(filters.regex(r"^bg_"))
+async def handle_background_selection(client: Client, callback_query: CallbackQuery):
+    """Handle background color selection"""
+    user_id = callback_query.from_user.id
+    
+    if user_id not in user_sessions:
+        await callback_query.answer("Session expired. Please send image again.", show_alert=True)
+        return
+    
+    try:
+        # Get selected background
+        bg_color = callback_query.data.replace("bg_", "")
+        bg_name = BACKGROUND_OPTIONS.get(bg_color, "Transparent")
+        
+        # Update processing message
+        await callback_query.message.edit_text(f"🔄 Removing background with {bg_name} background...")
+        
+        # Process image
+        image_path = user_sessions[user_id]["image_path"]
+        output_image = await process_image_background(image_path, bg_color)
+        
+        if output_image:
+            # Send the processed image
+            await callback_query.message.reply_document(
+                document=output_image,
+                caption=f"✅ **Background removed successfully!**\n🎨 Background: {bg_name}",
+                file_name=f"no_bg_{bg_color}.png"
+            )
+            
+            # Delete processing message
+            await callback_query.message.delete()
+        else:
+            await callback_query.message.edit_text("❌ Error processing image. Please try again.")
+        
+        # Cleanup
+        cleanup_user_session(user_id)
+        await callback_query.answer()
+        
+    except Exception as e:
+        logger.error(f"Error in background selection: {e}")
+        await callback_query.message.edit_text("❌ Error processing image. Please try again.")
+        cleanup_user_session(user_id)
+
+async def process_image_background(image_path: str, bg_color: str) -> Optional[BytesIO]:
+    """Process image with selected background color"""
+    try:
+        # Convert bg_color to remove.bg format
+        bg_map = {
+            "white": "white",
+            "black": "black", 
+            "transparent": None,
+            "gray": "gray",
+            "red": "ff0000",
+            "blue": "0000ff",
+            "green": "00ff00"
+        }
+        
+        bg_color_param = bg_map.get(bg_color)
+        
+        # Use remove.bg API
+        if bg_color_param:
+            result = rmbg.remove_background_from_img_file(
+                image_path,
+                bg_color=bg_color_param
+            )
+        else:
+            result = rmbg.remove_background_from_img_file(image_path)
+        
+        # Convert to BytesIO for Telegram
+        output = BytesIO()
+        output.name = f"no_bg_{bg_color}.png"
+        
+        if hasattr(result, 'save'):
+            # If it's a PIL Image
+            result.save(output, format='PNG')
+        else:
+            # If it's bytes
+            output.write(result)
+        
+        output.seek(0)
+        return output
+        
+    except removebg.RemoveBgValidationError as e:
+        logger.error(f"Remove.bg validation error: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Error processing image: {e}")
+        return None
+
+def cleanup_user_session(user_id: int):
+    """Clean up user session and temporary files"""
+    try:
+        if user_id in user_sessions:
+            session_data = user_sessions[user_id]
+            # Remove temporary file
+            if os.path.exists(session_data["image_path"]):
+                os.remove(session_data["image_path"])
+            # Remove session
+            del user_sessions[user_id]
+    except Exception as e:
+        logger.error(f"Error cleaning up session: {e}")
+
+@app.on_message(filters.command("help"))
+async def help_command(client: Client, message: Message):
+    """Help command handler"""
     help_text = """
-🆘 **Help Guide**
+📖 **How to use this bot:**
+
+1. **Send an image** - Upload any image (as photo or document)
+2. **Choose background** - Select from available background colors
+3. **Download result** - Get your image with background removed
+
+**Supported formats:** JPG, PNG, WebP
+**Max file size:** 20MB
 
 **Commands:**
 /start - Start the bot
 /help - Show this help message
-/ping - Check if bot is alive
+/stats - Show bot statistics
 
-**How to use:**
-1. **Remove background**: Simply send me a clear photo of a person or object
-2. **Change background**: Reply to the processed image with:
-   - A color name: "red", "blue", "green"
-   - A hex color: "#FF0000", "#00FF00"
-   - Another photo to use as background
-
-**Tips:**
-• Use clear, high-contrast images for best results
-• Supported formats: JPEG, PNG, WebP
-• Max file size: 10MB
-• Rate limit: 10 requests per minute
+**Note:** For best results, use images with clear subject boundaries.
     """
-    await event.respond(help_text)
+    await message.reply_text(help_text)
 
-@bot.on(events.NewMessage(pattern='/ping'))
-async def ping(event):
-    """Simple ping command to test if bot is alive."""
-    await event.respond("🏓 Pong! Bot is working and responsive.")
+@app.on_message(filters.command("stats"))
+async def stats_command(client: Client, message: Message):
+    """Statistics command handler"""
+    stats_text = f"""
+📊 **Bot Statistics**
 
-@bot.on(events.NewMessage(photo=True))
-async def remove_background(event):
-    """Handler for incoming photos to remove the background."""
-    logger.info(f"Photo received from user {event.sender_id}")
-    
-    # Check rate limiting
-    if is_rate_limited(event.sender_id):
-        await event.respond("⏰ Rate limit exceeded. Please wait a minute before making more requests.")
-        return
+**Active sessions:** {len(user_sessions)}
+**Background options:** {len(BACKGROUND_OPTIONS)}
 
-    # Check file size
-    if event.message.file and event.message.file.size > config.MAX_FILE_SIZE:
-        await event.respond("📁 File too large! Please send an image smaller than 10MB.")
-        return
+**Bot Status:** ✅ Operational
+**Processing Speed:** ⚡ Instant
+**Quality:** 🏆 High
 
-    processing_message = await event.respond("🔄 Processing your image...")
-
-    try:
-        # Download the image from the message
-        logger.info("Downloading image...")
-        image_bytes = await bot.download_media(event.message.photo, file=bytes)
-        
-        # Call the remove.bg API
-        logger.info("Calling remove.bg API...")
-        response = requests.post(
-            'https://api.remove.bg/v1.0/removebg',
-            files={'image_file': image_bytes},
-            data={'size': 'auto'},
-            headers={'X-Api-Key': config.API_KEY},
-            timeout=30
-        )
-
-        if response.status_code == requests.codes.ok:
-            # Send the image with the removed background back to the user
-            logger.info("Background removed successfully")
-            result_image = BytesIO(response.content)
-            result_image.name = 'no_bg.png'
-            
-            await processing_message.delete()
-            await bot.send_file(
-                event.chat_id, 
-                result_image, 
-                caption="✅ Background removed! Reply to this with a color or image to add a new background."
-            )
-        
-        elif response.status_code == 402:
-            logger.warning("remove.bg API quota exceeded")
-            await processing_message.edit("❌ API quota exceeded. Please try again later.")
-        
-        elif response.status_code == 400:
-            logger.warning("remove.bg API bad request")
-            await processing_message.edit("❌ Could not process image. Make sure it contains a clear subject and is not too complex.")
-        
-        else:
-            logger.error(f"remove.bg API error: {response.status_code}")
-            await processing_message.edit(f"❌ API error (code: {response.status_code}). Please try again.")
-
-    except requests.exceptions.Timeout:
-        logger.error("remove.bg API timeout")
-        await processing_message.edit("⏰ Request timeout. Please try again.")
-    except Exception as e:
-        logger.error(f"Unexpected error in remove_background: {e}")
-        await processing_message.edit(f"❌ An unexpected error occurred: {str(e)}")
-
-@bot.on(events.NewMessage)
-async def handle_background_reply(event):
-    """Handler for replies to add a custom background."""
-    if not event.message.is_reply:
-        return
-
-    # Check rate limiting
-    if is_rate_limited(event.sender_id):
-        await event.respond("⏰ Rate limit exceeded. Please wait a minute before making more requests.")
-        return
-
-    try:
-        reply_msg = await event.get_reply_message()
-        if not reply_msg or not reply_msg.photo:
-            return
-
-        # Check if the original message was from our bot
-        bot_me = await bot.get_me()
-        if reply_msg.sender_id != bot_me.id:
-            return
-
-        logger.info(f"Background change request from user {event.sender_id}")
-
-        processing_message = await event.respond("🎨 Adding new background...")
-
-        # Download the original image (with background removed)
-        original_image_bytes = await bot.download_media(reply_msg.photo, file=bytes)
-        original_image = Image.open(BytesIO(original_image_bytes)).convert("RGBA")
-
-        new_bg = None
-        if event.message.photo:
-            # User sent an image as background
-            logger.info("Using image as background")
-            bg_image_bytes = await bot.download_media(event.message.photo, file=bytes)
-            new_bg = Image.open(BytesIO(bg_image_bytes)).convert("RGBA")
-            new_bg = new_bg.resize(original_image.size)
-        
-        elif event.message.text:
-            # User sent a color name as background
-            color_input = event.message.text.lower().strip()
-            logger.info(f"Using color as background: {color_input}")
-            try:
-                new_bg = Image.new("RGBA", original_image.size, color_input)
-            except ValueError:
-                await processing_message.edit("❌ Invalid color. Use names like 'red', 'blue' or hex codes like '#FF0000'")
-                return
-
-        if new_bg:
-            # Composite the images
-            new_bg.paste(original_image, (0, 0), original_image)
-            
-            # Save the final image to a byte stream
-            final_image_stream = BytesIO()
-            new_bg.save(final_image_stream, 'PNG')
-            final_image_stream.seek(0)
-            final_image_stream.name = 'with_background.png'
-
-            await processing_message.delete()
-            await bot.send_file(event.chat_id, final_image_stream, caption="✅ New background added!")
-            logger.info("Background added successfully")
-        
-        else:
-            await processing_message.delete()
-
-    except Exception as e:
-        logger.error(f"Error in handle_background_reply: {e}")
-        await event.respond(f"❌ Error processing background: {str(e)}")
-
-@bot.on(events.NewMessage(pattern='/status'))
-async def status_command(event):
-    """Check bot status and statistics."""
-    status_text = """
-🤖 **Bot Status**
-
-**Services:**
-✅ Telegram Bot - Connected
-✅ remove.bg API - Ready
-✅ Image Processing - Active
-
-**Statistics:**
-• Rate limit: 10 requests/minute per user
-• Max file size: 10MB
-• Supported formats: JPEG, PNG, WebP
-
-Bot is running smoothly! 🚀
+Powered by remove.bg API
     """
-    await event.respond(status_text)
+    await message.reply_text(stats_text)
 
-# --- Main Loop ---
-async def main():
-    """Start the bot."""
-    logger.info("🤖 Bot is starting...")
-    print("Bot is starting...")
+# Error handler
+@app.on_error()
+async def error_handler(_, update, error):
+    """Global error handler"""
+    logger.error(f"Error in update {update}: {error}")
     
-    # Test remove.bg API connection
-    try:
-        test_response = requests.get(
-            'https://api.remove.bg/v1.0/account',
-            headers={'X-Api-Key': config.API_KEY},
-            timeout=10
-        )
-        if test_response.status_code == 200:
-            logger.info("✅ remove.bg API connection successful")
-        else:
-            logger.warning(f"⚠️ remove.bg API test returned status: {test_response.status_code}")
-    except Exception as e:
-        logger.warning(f"⚠️ remove.bg API test failed: {e}")
-    
-    # Get bot info
-    me = await bot.get_me()
-    logger.info(f"✅ Bot started successfully as @{me.username}")
-    print(f"Bot is running as @{me.username}")
-    
-    # Keep the bot running
-    await bot.run_until_disconnected()
+    if isinstance(error, FloodWait):
+        wait_time = error.x
+        logger.warning(f"Flood wait for {wait_time} seconds")
+        await asyncio.sleep(wait_time)
 
-if __name__ == '__main__':
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("Bot stopped by user")
-        print("Bot stopped by user")
-    except Exception as e:
-        logger.error(f"Bot crashed: {e}")
-        print(f"Bot crashed: {e}")
-        raise
+if __name__ == "__main__":
+    logger.info("Starting Background Remover Bot...")
+    app.run()
