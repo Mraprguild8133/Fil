@@ -4,7 +4,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from config import BOT_TOKEN, REMOVE_BG_API_KEY, REMOVE_BG_URL
 import io
-from PIL import Image
+import os
 
 # Set up logging
 logging.basicConfig(
@@ -105,30 +105,38 @@ Use /help for more information.
             logger.error(f"Error processing image: {e}")
             await update.message.reply_text("❌ An error occurred while processing your image. Please try again.")
     
-    async def remove_background(self, image_bytes: bytes) -> bytes:
+    async def remove_background(self, image_bytes: bytearray) -> bytes:
         """Remove background using remove.bg API"""
         try:
             headers = {
                 'X-Api-Key': REMOVE_BG_API_KEY,
             }
             
+            # Convert bytearray to bytes for requests
+            image_bytes = bytes(image_bytes)
+            
             files = {
-                'image_file': ('image.jpg', image_bytes)
+                'image_file': ('image.jpg', image_bytes, 'image/jpeg')
             }
             
             data = {
                 'size': 'auto'
             }
             
+            logger.info("Sending request to remove.bg API...")
+            
             response = requests.post(
                 REMOVE_BG_URL,
                 headers=headers,
                 files=files,
                 data=data,
-                timeout=30
+                timeout=60
             )
             
+            logger.info(f"API Response Status: {response.status_code}")
+            
             if response.status_code == 200:
+                logger.info("Background removed successfully!")
                 return response.content
             else:
                 logger.error(f"Remove.bg API error: {response.status_code} - {response.text}")
@@ -138,12 +146,18 @@ Use /help for more information.
             logger.error(f"Request error: {e}")
             return None
         except Exception as e:
-            logger.error(f"Unexpected error: {e}")
+            logger.error(f"Unexpected error in remove_background: {e}")
             return None
     
     def run(self):
         """Start the bot"""
         logger.info("Bot is starting...")
+        
+        # Validate API keys
+        if not BOT_TOKEN or not REMOVE_BG_API_KEY:
+            logger.error("Missing API keys! Please check your .env file")
+            return
+        
         self.application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
