@@ -2,15 +2,16 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-
 # Copy and install dependencies
-COPY requirements.txt 
-RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+RUN pip3 install -r requirements.txt
 
-# Copy application code
+# Copy app code
 COPY . .
 
 EXPOSE 5000
 
-# Run the app
-CMD ["python", "main.py"]
+# Health check
+HEALTHCHECK CMD curl -f http://localhost:5000/ || exit 1
+
+CMD ["python", "bot.py"]
